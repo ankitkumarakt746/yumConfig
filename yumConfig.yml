@@ -1,0 +1,111 @@
+---
+- name: Add local yum repository
+  hosts: all
+  gather_facts: true
+  vars:
+    - dvd_found: false
+    - dvd_name: ""
+    - dvd_path: ""
+    - dvd_size: 0
+    - available_disk_space: 0
+  tasks:
+
+    - name: Check DVD availability
+      set_fact:
+        dvd_found: true
+      when: item.device == "/dev/sr0"
+      with_items:
+        - "{{ ansible_mounts }}"
+
+    - name: checking for DVD availability
+      block:
+        - name: DVD not found, notifying user
+          debug:
+            msg: "DVD not found!"
+        - name: Halting playbook operation
+          meta: end_play
+      when: dvd_found == false
+
+    - name: Get DVD name, location and size
+      set_fact:
+        dvd_name: "{{ item.mount | regex_replace('/run/media/root/', '') }}"
+        dvd_path: "{{ item.mount }}"
+        dvd_size: "{{ item.size_total }}"
+      when: item.device == "/dev/sr0"
+      with_items:
+        - "{{ ansible_mounts }}"
+
+    - name: Get available disk space
+      set_fact:
+        available_disk_space: "{{ item.size_available }}"
+      when: item.mount == "/"
+      with_items:
+        - "{{ ansible_mounts }}"
+
+    - name: Display variable values and their datatype
+      debug:
+        msg:
+          - "dvd_name: {{ dvd_name }} -> {{ dvd_name | type_debug}}"
+          - "dvd_found: {{ dvd_found }} -> {{ dvd_found | type_debug }}"
+          - "dvd_path: {{ dvd_path }} -> {{ dvd_path | type_debug }}"
+          - "dvd_size: {{ dvd_size }} -> {{ dvd_size | type_debug}}"
+          - "available_disk_space: {{ available_disk_space }} -> {{ available_disk_space | type_debug }}"
+          
+    - name: Preparing for transfer
+      block:
+        - name: Notifying user of low space
+          debug:
+            msg: "Available disk space: {{ (available_disk_space|int/(1024*1024*1024)) | round(2, 'floor') }}GB is less than required ({{ (dvd_size|int/(1024*1024*1024)) | round(2, 'floor') }}GB)."
+        - name: Halting playbook operation
+          meta: end_play
+      when: available_disk_space | int < dvd_size | int
+        
+    - name: Create rhel directory
+      file:
+        path: /rhel
+        state: directory
+        owner: root
+        group: root
+        #mode: 
+
+    - name: Copy files from DVD
+      copy:
+        src: "{{ dvd_path }}"
+        dest: "/rhel/"
+        remote_src: true
+        directory_mode: true
+        #owner:
+        #group:
+        mode: preserve
+
+    - name: Get directory name
+      shell: ls /rhel
+
+    - name: Create repo
+      yum_repository:
+        name: Repo-AppStream
+        description: Local RHEL AppStream repo
+        file: rhel
+        baseurl: "file:///rhel/{{ dvd_name }}/AppStream"
+        enabled: true
+        gpgcheck: true
+        gpgkey: file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+      notify: yum-clean-metadata
+
+    - name: Create repo
+      yum_repository:  
+        name: Repo-BaseOS
+        description: Local RHEL BaseOS repo
+        file: rhel     
+        baseurl: "file:///rhel/{{ dvd_name }}/BaseOS"
+        enabled: true  
+        gpgcheck: true 
+        gpgkey: file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+      notify: yum-clean-metadata
+
+
+  handlers:
+    - name: yum-clean-metadata
+      command: yum clean metadata
+      args:
+        warn: no
